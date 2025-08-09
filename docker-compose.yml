@@ -7,7 +7,7 @@ services:
       - "514:514/tcp"
       - "514:514/udp"
     environment:
-      - FORWARD_TOKEN=changeme
+      - FORWARD_TOKEN=changeme1
     volumes:
       - ./data:/data
       - /var/log:/var/log/host:ro
