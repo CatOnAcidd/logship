@@ -12,8 +12,8 @@ type ServerConfig struct {
 }
 
 type Config struct {
-	Server ServerConfig `yaml:"server"`
-	DataDir string      `yaml:"data_dir"`
+	Server  ServerConfig `yaml:"server"`
+	DataDir string       `yaml:"data_dir"`
 }
 
 func Default() *Config {
@@ -27,8 +27,19 @@ func Default() *Config {
 	}
 }
 
-// Load is intentionally minimal so Base compiles even without YAML parser.
-func Load(path string) *Config {
+// PathFromArgsOrDefault returns args[1] if provided, otherwise a sane default path.
+func PathFromArgsOrDefault(args []string) string {
+	if len(args) > 1 && args[1] != "" {
+		return args[1]
+	}
+	if v := os.Getenv("CONFIG_PATH"); v != "" {
+		return v
+	}
+	return "/app/config.yaml"
+}
+
+// Load is minimal for Base; returns defaults and no error if file missing.
+func Load(path string) (*Config, error) {
 	cfg := Default()
 	if v := os.Getenv("HTTP_LISTEN"); v != "" { cfg.Server.HTTPListen = v }
 	if v := os.Getenv("SYSLOG_TCP_LISTEN"); v != "" { cfg.Server.SyslogTCPListen = v }
@@ -39,5 +50,5 @@ func Load(path string) *Config {
 			log.Printf("config: %s not found, using defaults", path)
 		}
 	}
-	return cfg
+	return cfg, nil
 }
