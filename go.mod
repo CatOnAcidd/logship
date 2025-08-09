@@ -1,8 +1,6 @@
-module github.com/CatOnAcidd/logship
+module github.com/catonacidd/logship
 
 go 1.22.4
-
-replace github.com/CatOnAcidd/logship => .
 
 require (
     github.com/go-chi/chi/v5 v5.1.0

@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/CatOnAcidd/logship/internal/rules"
-	"github.com/CatOnAcidd/logship/internal/store"
+	"github.com/catonacidd/logship/internal/rules"
+	"github.com/catonacidd/logship/internal/store"
 )
 
 // evaluateAndStore applies rules (drop/allow) and inserts event; stores drop preview when needed.

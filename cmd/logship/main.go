@@ -8,12 +8,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/CatOnAcidd/logship/internal/config"
-	"github.com/CatOnAcidd/logship/internal/forward"
-	"github.com/CatOnAcidd/logship/internal/ingest"
-	"github.com/CatOnAcidd/logship/internal/store"
-	"github.com/CatOnAcidd/logship/internal/transform"
-	"github.com/CatOnAcidd/logship/internal/ui"
+	"github.com/catonacidd/logship/internal/config"
+	"github.com/catonacidd/logship/internal/forward"
+	"github.com/catonacidd/logship/internal/ingest"
+	"github.com/catonacidd/logship/internal/store"
+	"github.com/catonacidd/logship/internal/transform"
+	"github.com/catonacidd/logship/internal/ui"
 )
 
 func main() {

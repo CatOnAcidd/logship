@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/CatOnAcidd/logship/internal/rules"
-	"github.com/CatOnAcidd/logship/internal/store"
+	"github.com/catonacidd/logship/internal/rules"
+	"github.com/catonacidd/logship/internal/store"
 )
 
 // Samples from recent logs for UI testing

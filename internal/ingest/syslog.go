@@ -11,9 +11,9 @@ import (
 	syslog "github.com/influxdata/go-syslog/v3"
 	rfc5424 "github.com/influxdata/go-syslog/v3/rfc5424"
 
-	"github.com/CatOnAcidd/logship/internal/config"
-	"github.com/CatOnAcidd/logship/internal/rules"
-	"github.com/CatOnAcidd/logship/internal/store"
+	"github.com/catonacidd/logship/internal/config"
+	"github.com/catonacidd/logship/internal/rules"
+	"github.com/catonacidd/logship/internal/store"
 )
 
 func RunSyslog(ctx context.Context, db *store.DB, cfg *config.Config) {

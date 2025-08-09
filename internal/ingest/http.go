@@ -10,10 +10,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/CatOnAcidd/logship/internal/config"
-	"github.com/CatOnAcidd/logship/internal/rules"
-	"github.com/CatOnAcidd/logship/internal/store"
-	"github.com/CatOnAcidd/logship/internal/transform"
+	"github.com/catonacidd/logship/internal/config"
+	"github.com/catonacidd/logship/internal/rules"
+	"github.com/catonacidd/logship/internal/store"
+	"github.com/catonacidd/logship/internal/transform"
 )
 
 type HTTPServer struct {

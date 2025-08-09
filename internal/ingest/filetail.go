@@ -9,8 +9,8 @@ import (
 
 	"github.com/nxadm/tail"
 
-	"github.com/CatOnAcidd/logship/internal/rules"
-	"github.com/CatOnAcidd/logship/internal/store"
+	"github.com/catonacidd/logship/internal/rules"
+	"github.com/catonacidd/logship/internal/store"
 )
 
 func RunFileTail(ctx context.Context, db *store.DB, path, glob string) {
