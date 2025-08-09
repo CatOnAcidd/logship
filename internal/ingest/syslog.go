@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	syslog "github.com/influxdata/go-syslog/v3"
 	rfc5424 "github.com/influxdata/go-syslog/v3/rfc5424"
 
 	"github.com/CatOnAcidd/logship/internal/config"
@@ -44,8 +45,10 @@ func RunSyslog(ctx context.Context, db *store.DB, cfg *config.Config) {
 				return
 			}
 			log.Printf("syslog UDP listening on %s", cfg.Server.SyslogUDPListen)
+
 			buf := make([]byte, 8192)
-			machine := rfc5424.NewMachine()
+			machine := rfc5424.NewMachine() // returns syslog.Machine
+
 			for {
 				n, remote, err := conn.ReadFromUDP(buf)
 				if err != nil {
@@ -64,8 +67,10 @@ func handleSyslogConn(ctx context.Context, db *store.DB, conn net.Conn) {
 	defer conn.Close()
 	host := conn.RemoteAddr().String()
 	sc := bufio.NewScanner(conn)
-	// NOTE: this is line-delimited for MVP. Proper RFC5425 framing would be octet-counting.
-	machine := rfc5424.NewMachine()
+
+	// MVP: line-delimited. (Proper octet-counting RFC framing can be added later.)
+	machine := rfc5424.NewMachine() // syslog.Machine
+
 	for sc.Scan() {
 		line := sc.Text()
 		if err := parseAndStoreSyslog(ctx, db, machine, line, host); err != nil {
@@ -74,16 +79,19 @@ func handleSyslogConn(ctx context.Context, db *store.DB, conn net.Conn) {
 	}
 }
 
-func parseAndStoreSyslog(ctx context.Context, db *store.DB, machine *rfc5424.Machine, msg string, host string) error {
+func parseAndStoreSyslog(ctx context.Context, db *store.DB, machine syslog.Machine, msg string, host string) error {
 	parsed, err := machine.Parse([]byte(msg))
+
 	obj := map[string]any{
 		"message": msg,
 	}
 	if err == nil && parsed != nil {
-		obj["parsed"] = parsed
+		// v3 Message supports Dump() -> map[string]any
+		obj["parsed"] = parsed.Dump()
 	} else if err != nil {
 		obj["parse_error"] = err.Error()
 	}
+
 	raw, _ := json.Marshal(obj)
 	ev := &store.Event{
 		Source: "syslog",
