@@ -8,6 +8,7 @@ require (
     github.com/nxadm/tail v1.4.11
     github.com/influxdata/go-syslog/v3 v3.0.0
     modernc.org/sqlite v1.30.1
+    gopkg.in/yaml.v3 v3.0.1
 )
 
 replace modernc.org/sqlite => modernc.org/sqlite v1.30.1
