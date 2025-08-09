@@ -9,6 +9,7 @@ import (
 
 	"github.com/nxadm/tail"
 
+	"github.com/CatOnAcidd/logship/internal/rules"
 	"github.com/CatOnAcidd/logship/internal/store"
 )
 
@@ -28,9 +29,9 @@ func RunFileTail(ctx context.Context, db *store.DB, path, glob string) {
 			if !ok { time.Sleep(200 * time.Millisecond); continue }
 			obj := map[string]any{"message": line.Text}
 			raw, _ := json.Marshal(obj)
-			_ = db.Insert(context.Background(), &store.Event{
-				Source: "file:"+p, Raw: raw, TS: time.Now().UnixMilli(),
-			})
+			ev := &store.Event{ Source: "file:"+p, Raw: raw, TS: time.Now().UnixMilli() }
+			eng := rules.New(db.SQL()); _ = eng.Load(ctx)
+			_ = evaluateAndStore(context.Background(), db, eng, ev)
 		}
 	}
 }

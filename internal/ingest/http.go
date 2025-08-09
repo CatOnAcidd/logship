@@ -3,7 +3,6 @@ package ingest
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/CatOnAcidd/logship/internal/config"
+	"github.com/CatOnAcidd/logship/internal/rules"
 	"github.com/CatOnAcidd/logship/internal/store"
 	"github.com/CatOnAcidd/logship/internal/transform"
 )
@@ -62,6 +62,10 @@ func IngestHandler(db *store.DB, tr *transform.Engine) http.HandlerFunc {
 		default:
 			http.Error(w, "body must be object or array of objects", 400); return
 		}
+
+		eng := rules.New(db.SQL())
+		_ = eng.Load(r.Context())
+
 		for _, m := range items {
 			raw, _ := json.Marshal(m)
 			ev := &store.Event{
@@ -94,7 +98,7 @@ func IngestHandler(db *store.DB, tr *transform.Engine) http.HandlerFunc {
 					}
 				}
 			}
-			if err := db.Insert(r.Context(), ev); err != nil {
+			if err := evaluateAndStore(r.Context(), db, eng, ev); err != nil {
 				http.Error(w, fmt.Sprintf("insert error: %v", err), 500); return
 			}
 		}
@@ -118,7 +122,7 @@ func QueryLogsHandler(db *store.DB) http.HandlerFunc {
 				_, err := fmt.Sscan(v, &n)
 				return n, err
 			}
-			return 0, errors.New("")
+			return 0, fmt.Errorf("no value")
 		}
 		if v, err := parseInt("from"); err == nil { p.From = v }
 		if v, err := parseInt("to"); err == nil { p.To = v }
@@ -143,5 +147,16 @@ func Router(db *store.DB, cfg *config.Config, tr *transform.Engine) *chi.Mux {
 	r.Post("/ingest", IngestHandler(db, tr))
 	r.Get("/logs", QueryLogsHandler(db))
 	r.Get("/healthz", HealthzHandler)
+
+	// New endpoints
+	r.Get("/samples", SamplesHandler(db))
+	r.Get("/rules", RulesListHandler(db.SQL()))
+	r.Post("/rules", RulesCreateHandler(db.SQL()))
+	r.Delete("/rules", RulesDeleteHandler(db.SQL()))
+	r.Post("/rules/test", RulesTestHandler(db))
+	r.Get("/drops", DropsListHandler(db))
+	r.Get("/settings", SettingsGetHandler(db))
+	r.Put("/settings", SettingsPutHandler(db))
+
 	return r
 }

@@ -12,6 +12,7 @@ import (
 	rfc5424 "github.com/influxdata/go-syslog/v3/rfc5424"
 
 	"github.com/CatOnAcidd/logship/internal/config"
+	"github.com/CatOnAcidd/logship/internal/rules"
 	"github.com/CatOnAcidd/logship/internal/store"
 )
 
@@ -89,13 +90,16 @@ func parseAndStoreSyslog(ctx context.Context, db *store.DB, machine syslog.Machi
 	if err != nil {
 		obj["parse_error"] = err.Error()
 	}
-
 	raw, _ := json.Marshal(obj)
+
 	ev := &store.Event{
 		Source: "syslog",
 		Host:   host,
 		Raw:    raw,
 		TS:     time.Now().UnixMilli(),
 	}
-	return db.Insert(ctx, ev)
+
+	eng := rules.New(db.SQL())
+	_ = eng.Load(ctx)
+	return evaluateAndStore(ctx, db, eng, ev)
 }

@@ -4,24 +4,92 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>logship</title>
-  <style>
-    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; }
-    header { padding: 12px 16px; background: #111827; color: white; display:flex; align-items:center; gap:12px; }
-    header input { width: 280px; padding: 6px 8px; border-radius: 6px; border: 1px solid #374151; background:#111; color:white;}
-    .container { padding: 16px; }
-    .log { font-family: ui-monospace, Menlo, monospace; background: #0b1220; color: #e5e7eb; padding: 8px; border-radius: 8px; margin-bottom: 8px; }
-    .meta { color:#93c5fd; font-size:12px; }
-    .payload { white-space: pre-wrap; word-break: break-word; }
-  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-  <header>
-    <strong>logship</strong>
-    <input id="q" placeholder="Search... (text in raw/event/transformed)"/>
-    <button onclick="refresh()">Search</button>
+<body class="bg-slate-950 text-slate-100">
+  <header class="px-6 py-4 bg-slate-900 border-b border-slate-800 flex items-center gap-4">
+    <div class="text-xl font-semibold">logship</div>
+    <div class="ml-auto flex items-center gap-2">
+      <button id="themeBtn" class="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Toggle theme</button>
+    </div>
   </header>
-  <div class="container" id="logs"></div>
+
+  <main class="p-6 grid grid-cols-1 xl:grid-cols-3 gap-6">
+    <!-- Left: Live logs -->
+    <section class="xl:col-span-2">
+      <div class="mb-3 flex items-center gap-2">
+        <input id="q" class="w-80 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg outline-none" placeholder="Search logs..."/>
+        <button onclick="refresh()" class="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500">Search</button>
+        <a href="/drops" onclick="event.preventDefault(); loadDrops();" class="px-3 py-2 rounded-lg bg-rose-700 hover:bg-rose-600 ml-2">Last 100 dropped</a>
+      </div>
+      <div id="logs" class="space-y-2"></div>
+    </section>
+
+    <!-- Right: Rule Builder -->
+    <section class="">
+      <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800 shadow">
+        <h2 class="text-lg font-semibold mb-4">Rule Builder</h2>
+        <form id="ruleForm" class="space-y-3" onsubmit="createRule(event)">
+          <div>
+            <label class="block text-sm mb-1">Name</label>
+            <input id="r_name" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg" placeholder="e.g., Drop noisy healthchecks"/>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-sm mb-1">Action</label>
+              <select id="r_action" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg">
+                <option value="drop">drop</option>
+                <option value="allow">allow</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm mb-1">Source</label>
+              <select id="r_source" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg">
+                <option value="">any</option>
+                <option value="syslog">syslog</option>
+                <option value="http">http</option>
+                <option value="file">file</option>
+                <option value="windows">windows</option>
+              </select>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-sm mb-1">Field</label>
+              <select id="p_field" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg">
+                <option>message</option>
+                <option>host</option>
+                <option>app</option>
+                <option>level</option>
+                <option>source</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm mb-1">Regex</label>
+              <input id="p_expr" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg" placeholder="e.g., kube-probe|healthz"/>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm mb-1">Priority</label>
+            <input id="r_priority" type="number" value="100" class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg"/>
+          </div>
+          <div class="flex items-center justify-between">
+            <button type="button" onclick="testRule()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700">Test on samples</button>
+            <button type="submit" class="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500">Create rule</button>
+          </div>
+        </form>
+        <div id="testResults" class="mt-4 space-y-2 max-h-72 overflow-auto"></div>
+      </div>
+    </section>
+  </main>
+
   <script>
+    let dark = true;
+    document.getElementById('themeBtn').onclick = () => {
+      dark = !dark;
+      document.body.className = dark ? 'bg-slate-950 text-slate-100' : 'bg-white text-slate-900';
+    };
+
     async function fetchLogs(q="") {
       const url = new URL(location.origin + "/logs");
       if (q) url.searchParams.set("q", q);
@@ -29,22 +97,74 @@
       const res = await fetch(url);
       return await res.json();
     }
-    function render(logs) {
+    function renderLogs(logs) {
       const c = document.getElementById("logs"); c.innerHTML="";
       logs.forEach(ev => {
-        const div = document.createElement("div"); div.className="log";
-        const ts = new Date(ev.ts).toISOString();
-        const meta = document.createElement("div"); meta.className="meta";
-        meta.textContent = `${ts} | ${ev.source} | ${ev.level || ""} | ${ev.host || ""} #${ev.id}`;
-        const payload = document.createElement("div"); payload.className="payload";
+        const div = document.createElement("div");
+        div.className="p-3 rounded-xl bg-slate-900 border border-slate-800";
+        const ts = new Date(ev.ts).toLocaleString();
+        const badge = ev.dropped ? '<span class="ml-2 px-2 py-0.5 rounded bg-rose-700 text-xs">dropped</span>' : '';
         const body = ev.transformed || ev.event || ev.raw || "";
-        try { payload.textContent = JSON.stringify(JSON.parse(body), null, 2); }
-        catch(e){ payload.textContent = body; }
-        div.append(meta, payload); c.append(div);
+        let pretty = body;
+        try { pretty = JSON.stringify(JSON.parse(body), null, 2); } catch(e){}
+        div.innerHTML = `
+          <div class="text-sm text-slate-400">${ts} • ${ev.source} • ${ev.level||""} • ${ev.host||""} ${badge}</div>
+          <pre class="mt-2 text-sm overflow-auto whitespace-pre-wrap break-words">${pretty}</pre>
+        `;
+        c.appendChild(div);
       });
     }
-    async function refresh(){ const q = document.getElementById("q").value; render(await fetchLogs(q)); }
+    async function refresh(){ const q = document.getElementById("q").value; renderLogs(await fetchLogs(q)); }
     refresh();
+
+    async function testRule(){
+      const payload = {
+        source: document.getElementById('r_source').value,
+        predicate: {type:"regex", field: document.getElementById('p_field').value, expr: document.getElementById('p_expr').value},
+        limit: 10
+      };
+      const res = await fetch("/rules/test", { method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(payload)});
+      const data = await res.json();
+      const c = document.getElementById("testResults"); c.innerHTML="";
+      const h = document.createElement("div"); h.className="text-sm text-slate-300";
+      h.textContent = `Matches: ${data.count}`;
+      c.appendChild(h);
+      data.matches.forEach(m => {
+        const d = document.createElement("div"); d.className="p-2 rounded bg-slate-800";
+        d.innerHTML = `<div class="text-xs text-slate-400">${new Date(m.ts).toLocaleString()} • ${m.source} • ${m.host}</div>
+        <div class="text-sm mt-1">${(m.message||"").slice(0,300)}</div>`;
+        c.appendChild(d);
+      });
+    }
+
+    async function createRule(e){
+      e.preventDefault();
+      const payload = {
+        name: document.getElementById('r_name').value || "New rule",
+        enabled: true,
+        priority: parseInt(document.getElementById('r_priority').value || "100", 10),
+        source: document.getElementById('r_source').value,
+        action: document.getElementById('r_action').value,
+        predicate: JSON.stringify({type:"regex", field: document.getElementById('p_field').value, expr: document.getElementById('p_expr').value})
+      };
+      const res = await fetch("/rules", { method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(payload)});
+      if(res.ok){ alert("Rule created"); } else { alert("Failed: " + await res.text()); }
+    }
+
+    async function loadDrops(){
+      const res = await fetch("/drops");
+      const list = await res.json();
+      const c = document.getElementById("logs"); c.innerHTML="";
+      const title = document.createElement("div"); title.className="text-lg font-semibold mb-2"; title.textContent="Last 100 dropped";
+      c.appendChild(title);
+      list.forEach(d => {
+        const div = document.createElement("div"); div.className="p-3 rounded-xl bg-slate-900 border border-slate-800";
+        const ts = new Date(d.ts).toLocaleString();
+        div.innerHTML = `<div class="text-sm text-slate-400">${ts} • ${d.source} • reason: ${d.reason||""}</div>
+        <pre class="mt-2 text-sm whitespace-pre-wrap break-words">${d.preview}</pre>`;
+        c.appendChild(div);
+      });
+    }
   </script>
 </body>
 </html>
