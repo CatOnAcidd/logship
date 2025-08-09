@@ -1,0 +1,19 @@
+services:
+  logship:
+    build: .
+    image: logship:dev
+    ports:
+      - "8080:8080"
+      - "514:514/tcp"
+      - "514:514/udp"
+    environment:
+      - FORWARD_TOKEN=changeme
+    volumes:
+      - ./data:/data
+      - /var/log:/var/log/host:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s

@@ -1,0 +1,39 @@
+server:
+  http_listen: ":8080"
+  syslog_tcp_listen: ":514"
+  syslog_udp_listen: ":514"
+  file_tails:
+    - path: "/var/log/host"
+      glob: "*.log"
+
+storage:
+  path: "/data/logs.db"
+  retention_days: 7
+  max_db_mb: 2048
+
+transforms:
+  - name: "normalize_message"
+    jq: '. | if has("message") then .msg = .message | del(.message) else . end'
+  - name: "extract_level"
+    jq: '.level = ( .level // .severity // "info" )'
+  - name: "scrub_pii"
+    jq: 'walk( if type=="string" then gsub("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"; "[redacted]") else . end )'
+
+forwarders:
+  - name: "primary-http"
+    type: "http"
+    url: "https://logs.example.com/ingest"
+    headers:
+      Authorization: "Bearer ${FORWARD_TOKEN}"
+    batch:
+      size: 500
+      timeout: "2s"
+    retry:
+      max_attempts: 10
+      backoff: "exponential"
+      min_backoff: "500ms"
+      max_backoff: "30s"
+
+ui:
+  enabled: true
+  auth: none

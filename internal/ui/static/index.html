@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>logship</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; }
+    header { padding: 12px 16px; background: #111827; color: white; display:flex; align-items:center; gap:12px; }
+    header input { width: 280px; padding: 6px 8px; border-radius: 6px; border: 1px solid #374151; background:#111; color:white;}
+    .container { padding: 16px; }
+    .log { font-family: ui-monospace, Menlo, monospace; background: #0b1220; color: #e5e7eb; padding: 8px; border-radius: 8px; margin-bottom: 8px; }
+    .meta { color:#93c5fd; font-size:12px; }
+    .payload { white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>logship</strong>
+    <input id="q" placeholder="Search... (text in raw/event/transformed)"/>
+    <button onclick="refresh()">Search</button>
+  </header>
+  <div class="container" id="logs"></div>
+  <script>
+    async function fetchLogs(q="") {
+      const url = new URL(location.origin + "/logs");
+      if (q) url.searchParams.set("q", q);
+      url.searchParams.set("limit","200");
+      const res = await fetch(url);
+      return await res.json();
+    }
+    function render(logs) {
+      const c = document.getElementById("logs"); c.innerHTML="";
+      logs.forEach(ev => {
+        const div = document.createElement("div"); div.className="log";
+        const ts = new Date(ev.ts).toISOString();
+        const meta = document.createElement("div"); meta.className="meta";
+        meta.textContent = `${ts} | ${ev.source} | ${ev.level || ""} | ${ev.host || ""} #${ev.id}`;
+        const payload = document.createElement("div"); payload.className="payload";
+        const body = ev.transformed || ev.event || ev.raw || "";
+        try { payload.textContent = JSON.stringify(JSON.parse(body), null, 2); }
+        catch(e){ payload.textContent = body; }
+        div.append(meta, payload); c.append(div);
+      });
+    }
+    async function refresh(){ const q = document.getElementById("q").value; render(await fetchLogs(q)); }
+    refresh();
+  </script>
+</body>
+</html>
