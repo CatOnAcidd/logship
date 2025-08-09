@@ -7,7 +7,7 @@ import (
 
 type FileTail struct {
 	Path string `yaml:"path"`
-	Glob bool   `yaml:"glob"`
+	Glob string `yaml:"glob"` // string pattern (e.g., "*.log"), matches main.go usage
 }
 
 type ServerConfig struct {
@@ -18,8 +18,8 @@ type ServerConfig struct {
 }
 
 type StorageConfig struct {
-	Path    string `yaml:"path"`     // <- main.go expects Storage.Path
-	DataDir string `yaml:"data_dir"` // keep existing for backward-compat
+	Path    string `yaml:"path"`
+	DataDir string `yaml:"data_dir"`
 }
 
 type Config struct {
@@ -42,7 +42,6 @@ func Default() *Config {
 	}
 }
 
-// PathFromArgsOrDefault reads os.Args[1] or CONFIG_PATH env or default path.
 func PathFromArgsOrDefault() string {
 	if len(os.Args) > 1 && os.Args[1] != "" {
 		return os.Args[1]
@@ -53,7 +52,6 @@ func PathFromArgsOrDefault() string {
 	return "/app/config.yaml"
 }
 
-// Load is minimal for Base; returns defaults and no error if file missing.
 func Load(path string) (*Config, error) {
 	cfg := Default()
 	if v := os.Getenv("HTTP_LISTEN"); v != "" { cfg.Server.HTTPListen = v }
