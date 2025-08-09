@@ -32,8 +32,8 @@ jobs:
           build-args: |
             EDITION=base
           tags: |
-            ghcr.io/${{ github.repository }}-base:latest
-            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/catonacidd/logship-base:latest
+            ghcr.io/catonacidd/logship:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -47,6 +47,6 @@ jobs:
       #     build-args: |
       #       EDITION=premium
       #     tags: |
-      #       ghcr.io/${{ github.repository }}-premium:latest
+      #       ghcr.io/catonacidd/logship-premium:latest
       #     cache-from: type=gha
       #     cache-to: type=gha,mode=max
