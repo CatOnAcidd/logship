@@ -19,6 +19,11 @@ func New(db *store.DB, cfg *config.Config, tr *transform.Engine) *Forwarder {
 	return &Forwarder{cfg: cfg, db: db, tr: tr}
 }
 
+// Run is expected by main.go. For Base, it's equivalent to Start(ctx).
+func (f *Forwarder) Run(ctx context.Context) error {
+	return f.Start(ctx)
+}
+
 // Start is a placeholder for Base; Premium can implement multiple destinations.
 func (f *Forwarder) Start(ctx context.Context) error {
 	<-ctx.Done()
