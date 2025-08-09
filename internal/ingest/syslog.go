@@ -68,7 +68,7 @@ func handleSyslogConn(ctx context.Context, db *store.DB, conn net.Conn) {
 	host := conn.RemoteAddr().String()
 	sc := bufio.NewScanner(conn)
 
-	// MVP: line-delimited. (Proper octet-counting RFC framing can be added later.)
+	// MVP: line-delimited framing
 	machine := rfc5424.NewMachine() // syslog.Machine
 
 	for sc.Scan() {
@@ -83,12 +83,10 @@ func parseAndStoreSyslog(ctx context.Context, db *store.DB, machine syslog.Machi
 	parsed, err := machine.Parse([]byte(msg))
 
 	obj := map[string]any{
-		"message": msg,
+		"message":   msg,
+		"parsed_ok": err == nil && parsed != nil,
 	}
-	if err == nil && parsed != nil {
-		// v3 Message supports Dump() -> map[string]any
-		obj["parsed"] = parsed.Dump()
-	} else if err != nil {
+	if err != nil {
 		obj["parse_error"] = err.Error()
 	}
 
