@@ -9,13 +9,15 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/catonacidd/logship/internal/config"
+	"github.com/catonacidd/logship/internal/store"
+	"github.com/catonacidd/logship/internal/transform"
 )
 
 //go:embed static/*
 var staticFS embed.FS
 
 // NewRouter builds a minimal router for Base and mounts static SPA UI.
-func NewRouter(cfg *config.Config) *chi.Mux {
+func NewRouter(db *store.DB, cfg *config.Config, tr *transform.Engine) *chi.Mux {
 	r := chi.NewRouter()
 	Mount(r)
 	return r
@@ -31,15 +33,16 @@ func Mount(r *chi.Mux) {
 
 	// SPA fallback: for any other GET that's not an API or ingest path, return index.html
 	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
-		// For API or ingest paths, let other handlers respond.
-		if req.URL.Path == "/" || req.URL.Path == "" {
-			// ok
-		} else if len(req.URL.Path) >= 5 && req.URL.Path[:5] == "/api/" {
-			http.NotFound(w, req)
-			return
-		} else if len(req.URL.Path) >= 7 && req.URL.Path[:7] == "/ingest" {
-			http.NotFound(w, req)
-			return
+		// Let API/ingest be handled elsewhere if present in your router.
+		if req.URL.Path != "/" && req.URL.Path != "" {
+			if len(req.URL.Path) >= 5 && req.URL.Path[:5] == "/api/" {
+				http.NotFound(w, req)
+				return
+			}
+			if len(req.URL.Path) >= 7 && req.URL.Path[:7] == "/ingest" {
+				http.NotFound(w, req)
+				return
+			}
 		}
 
 		b, err := fs.ReadFile(sub, "index.html")

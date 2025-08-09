@@ -6,14 +6,20 @@ import (
 )
 
 type ServerConfig struct {
-	HTTPListen      string `yaml:"http_listen"`
-	SyslogTCPListen string `yaml:"syslog_tcp_listen"`
-	SyslogUDPListen string `yaml:"syslog_udp_listen"`
+	HTTPListen      string   `yaml:"http_listen"`
+	SyslogTCPListen string   `yaml:"syslog_tcp_listen"`
+	SyslogUDPListen string   `yaml:"syslog_udp_listen"`
+	FileTails       []string `yaml:"file_tails"` // placeholder: list of file paths to tail
+}
+
+type StorageConfig struct {
+	DataDir string `yaml:"data_dir"`
+	// Add more fields later (max size, drop policy, etc.)
 }
 
 type Config struct {
-	Server  ServerConfig `yaml:"server"`
-	DataDir string       `yaml:"data_dir"`
+	Server  ServerConfig  `yaml:"server"`
+	Storage StorageConfig `yaml:"storage"`
 }
 
 func Default() *Config {
@@ -22,15 +28,18 @@ func Default() *Config {
 			HTTPListen:      ":8080",
 			SyslogTCPListen: "",
 			SyslogUDPListen: "",
+			FileTails:       nil,
 		},
-		DataDir: "/data",
+		Storage: StorageConfig{
+			DataDir: "/data",
+		},
 	}
 }
 
-// PathFromArgsOrDefault returns args[1] if provided, otherwise a sane default path.
-func PathFromArgsOrDefault(args []string) string {
-	if len(args) > 1 && args[1] != "" {
-		return args[1]
+// PathFromArgsOrDefault reads os.Args[1] or CONFIG_PATH env or default path.
+func PathFromArgsOrDefault() string {
+	if len(os.Args) > 1 && os.Args[1] != "" {
+		return os.Args[1]
 	}
 	if v := os.Getenv("CONFIG_PATH"); v != "" {
 		return v
@@ -44,7 +53,7 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("HTTP_LISTEN"); v != "" { cfg.Server.HTTPListen = v }
 	if v := os.Getenv("SYSLOG_TCP_LISTEN"); v != "" { cfg.Server.SyslogTCPListen = v }
 	if v := os.Getenv("SYSLOG_UDP_LISTEN"); v != "" { cfg.Server.SyslogUDPListen = v }
-	if v := os.Getenv("DATA_DIR"); v != "" { cfg.DataDir = v }
+	if v := os.Getenv("DATA_DIR"); v != "" { cfg.Storage.DataDir = v }
 	if path != "" {
 		if _, err := os.Stat(path); err != nil {
 			log.Printf("config: %s not found, using defaults", path)
