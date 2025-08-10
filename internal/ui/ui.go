@@ -4,6 +4,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 // Embed everything under internal/ui/static
@@ -11,18 +12,28 @@ import (
 var staticFS embed.FS
 
 // Handler returns an http.Handler that serves the embedded UI.
-// It serves index.html for "/" and lets FileServer handle other assets.
+// It serves index.html at "/" and falls back to index.html for unknown routes (SPA-friendly).
 func Handler() http.Handler {
-	sub, _ := fs.Sub(staticFS, "static")
+	sub, _ := fs.Sub(staticFS, "static") // sub implements fs.FS
 	fsHandler := http.FileServer(http.FS(sub))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Serve index.html at root
-		if r.URL.Path == "/" {
-			http.ServeFileFS(w, r, http.FS(sub), "index.html")
+		path := strings.TrimPrefix(r.URL.Path, "/")
+
+		// Root -> index.html
+		if path == "" || path == "index.html" {
+			http.ServeFileFS(w, r, sub, "index.html") // NOTE: pass fs.FS (sub), not http.FS(...)
 			return
 		}
-		// Otherwise serve static
-		fsHandler.ServeHTTP(w, r)
+
+		// Try to serve a static asset
+		if f, err := sub.Open(path); err == nil {
+			_ = f.Close()
+			fsHandler.ServeHTTP(w, r)
+			return
+		}
+
+		// SPA fallback -> index.html
+		http.ServeFileFS(w, r, sub, "index.html")
 	})
 }
