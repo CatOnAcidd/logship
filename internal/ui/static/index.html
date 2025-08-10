@@ -1,72 +1,119 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Logship</title>
-    <style>
-      :root { color-scheme: light dark; --bg:#0b0b0c; --fg:#eaeaea; --card:#17181a; --muted:#8a8f98; --accent:#7c5cff; }
-      html,body { margin:0; height:100%; }
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-             background: var(--bg); color: var(--fg); display:flex; align-items:center; justify-content:center; }
-      .card { width:min(900px, calc(100% - 3rem)); background:var(--card); border-radius:16px; padding:24px;
-              box-shadow: 0 10px 30px rgba(0,0,0,.25); }
-      .row { display:flex; gap:16px; flex-wrap:wrap; }
-      .pill { background:#26272b; padding:6px 10px; border-radius:999px; color:var(--muted); font-size:12px; }
-      h1 { margin:0 0 10px; font-weight:700; letter-spacing:.2px; }
-      p  { margin:0 0 18px; color:var(--muted); }
-      .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
-      .kpi { background:#202226; border:1px solid #2a2d33; border-radius:12px; padding:16px; }
-      .kpi h3 { margin:0 0 8px; font-size:13px; color:var(--muted); font-weight:600; }
-      .kpi div { font-size:22px; font-weight:700; }
-      .bar { height:8px; background:#222; border-radius:8px; overflow:hidden; }
-      .bar > i { display:block; height:100%; background:linear-gradient(90deg, #7c5cff, #5cc6ff); width:0%; transition:width .6s ease; }
-      .footer { display:flex; justify-content:space-between; align-items:center; margin-top:14px; font-size:12px; color:var(--muted); }
-      a { color:#a99dff; text-decoration:none; }
-      a:hover { text-decoration:underline; }
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <div class="row">
-        <div class="pill">Logship</div>
-        <div class="pill" id="status">Starting…</div>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>logship</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font:14px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#0f1115; color:#e6e7ea;}
+    .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .header { display:flex; align-items:center; justify-content:space-between; gap:16px;}
+    .brand { display:flex; align-items:center; gap:12px; }
+    .logo { width:28px; height:28px; border-radius:8px; background: linear-gradient(135deg,#79ffe1,#2bbfff); }
+    .title { font-weight:700; font-size:18px; letter-spacing:.3px;}
+    .grid { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:14px; margin-top:20px; }
+    .card { background:#151922; border:1px solid #1f2430; border-radius:14px; padding:14px; }
+    .label { font-size:12px; color:#9aa1ab; }
+    .value { font-weight:700; font-size:24px; margin-top:6px;}
+    table { width:100%; border-collapse: collapse; margin-top:16px; }
+    th, td { padding:8px 6px; border-bottom:1px solid #222; text-align:left; }
+    thead th { font-size:12px; color:#8a8f98; border-bottom:1px solid #2a2d33; }
+    .ok { color:#76e39c; }
+    .bad { color:#ff6b6b; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+    .muted { color:#9aa1ab; }
+    .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid #2a2d33; background:#121621; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="brand">
+        <div class="logo"></div>
+        <div class="title">logship</div>
+        <span class="pill" id="status">Starting…</span>
       </div>
-      <h1>Logship Dashboard</h1>
-      <p>Live status and recent activity.</p>
+      <div class="muted mono">/api/healthz & /api/logs</div>
+    </div>
 
-      <div class="grid">
-        <div class="kpi"><h3>Ingested</h3><div id="ingested">0</div></div>
-        <div class="kpi"><h3>Dropped</h3><div id="dropped">0</div></div>
-        <div class="kpi"><h3>Storage</h3><div id="storage">/var/lib/logship/logship.db</div></div>
-        <div class="kpi"><h3>Uptime</h3><div id="uptime">—</div></div>
+    <div class="grid">
+      <div class="card">
+        <div class="label">Ingested (total)</div>
+        <div class="value" id="ingested">0</div>
       </div>
-
-      <div style="margin:16px 0;">
-        <div class="bar"><i id="bar"></i></div>
+      <div class="card">
+        <div class="label">Dropped (total)</div>
+        <div class="value" id="dropped">0</div>
       </div>
-
-      <div class="footer">
-        <div>Try: <code>curl -X POST http://localhost:8080/ingest -H 'content-type: application/json' -d '{"host":"web-1","level":"info","message":"hello"}'</code></div>
-        <div><a href="/healthz" target="_blank">/healthz</a></div>
+      <div class="card">
+        <div class="label">HTTP Test</div>
+        <div class="mono">
+          curl -sS -X POST http://localhost:8080/ingest<br/>
+          -H 'content-type: application/json' \<br/>
+          -d '{"host":"web-1","level":"info","message":"hello from curl"}'
+        </div>
       </div>
     </div>
-    <script>
-      const qs = (s)=>document.querySelector(s);
-      const fmt = (n)=> n.toLocaleString();
-      async function tick(){
-        try {
-          const r = await fetch('/healthz');
-          qs('#status').textContent = r.ok ? 'Healthy' : 'Unhealthy';
-        } catch { qs('#status').textContent = 'No response'; }
-        // fake some movement so you see UI responding even before API hooks are wired
-        const v = Math.floor(Math.random()*100);
-        qs('#bar').style.width = v + '%';
-        qs('#ingested').textContent = fmt(Math.floor(performance.now()/1000));
-        qs('#dropped').textContent = fmt(Math.floor(Math.random()*100));
-        qs('#uptime').textContent = (performance.now()/1000).toFixed(0) + 's';
+
+    <div style="margin-top:16px;">
+      <div style="font-weight:600;margin-bottom:6px;">Recent logs</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Host</th>
+            <th>Level</th>
+            <th>Message</th>
+            <th class="muted">Source IP</th>
+          </tr>
+        </thead>
+        <tbody id="logtbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const qs = (s)=>document.querySelector(s);
+    const fmtNum = (n)=> Number(n||0).toLocaleString();
+
+    async function fetchJSON(url) {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+
+    async function refresh() {
+      try {
+        const [stats, logs] = await Promise.all([
+          fetchJSON('/api/stats'),
+          fetchJSON('/api/logs?dropped=0&limit=100')
+        ]);
+        qs('#status').textContent = 'Healthy';
+        qs('#status').classList.remove('bad'); qs('#status').classList.add('ok');
+        qs('#ingested').textContent = fmtNum(stats.total_ingested);
+        qs('#dropped').textContent  = fmtNum(stats.total_dropped);
+
+        const body = document.getElementById('logtbody');
+        body.innerHTML = logs.map(l => `
+          <tr>
+            <td>${new Date(l.ts*1000).toLocaleString()}</td>
+            <td>${(l.host||'')}</td>
+            <td>${(l.level||'')}</td>
+            <td>${(l.message||'').replace(/</g,'&lt;')}</td>
+            <td class="muted mono">${(l.source_ip||'')}</td>
+          </tr>
+        `).join('');
+
+      } catch (e) {
+        qs('#status').textContent = 'No response';
+        qs('#status').classList.remove('ok'); qs('#status').classList.add('bad');
+        console.error(e);
       }
-      setInterval(tick, 1000); tick();
-    </script>
-  </body>
+    }
+
+    setInterval(refresh, 1500);
+    refresh();
+  </script>
+</body>
 </html>

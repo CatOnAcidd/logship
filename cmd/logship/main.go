@@ -2,103 +2,83 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/catonacidd/logship/internal/config"
+	"github.com/catonacidd/logship/internal/api"
+	"github.com/catonacidd/logship/internal/ingest"
 	"github.com/catonacidd/logship/internal/store"
 	"github.com/catonacidd/logship/internal/ui"
 )
 
-func ensureDB(p string) (string, error) {
-	if p == "" {
-		p = "/var/lib/logship"
+func getenv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
-	// if looks like a dir (or is missing), make dir and use /logship.db
-	fi, err := os.Stat(p)
-	switch {
-	case err == nil && fi.IsDir():
-		if err := os.MkdirAll(p, 0o755); err != nil { return "", err }
-		return filepath.Join(p, "logship.db"), nil
-	case os.IsNotExist(err):
-		// treat as dir if no extension
-		if filepath.Ext(p) == "" {
-			if err := os.MkdirAll(p, 0o755); err != nil { return "", err }
-			return filepath.Join(p, "logship.db"), nil
-		}
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { return "", err }
-		return p, nil
-	default:
-		// existing non-dir => assume file
-		if !fi.IsDir() { _ = os.MkdirAll(filepath.Dir(p), 0o755); return p, nil }
-		return filepath.Join(p, "logship.db"), nil
-	}
+	return def
 }
 
 func main() {
-	// Load config
-	cfgPath := config.PathFromArgsOrDefault(os.Args[1:])
-	cfg, _ := config.Load(cfgPath)
-
-	// Open store
-	dbFile, err := ensureDB(cfg.Storage.Path)
-	if err != nil { log.Fatalf("resolve data path: %v", err) }
-	db, err := store.Open(dbFile)
-	if err != nil { log.Fatalf("open store: %v", err) }
-	defer func() { _ = db }()
-
-	log.Printf("store: using %s", dbFile)
-
-	// Router
-	r := chi.NewRouter()
-
-	// Health
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	// TODO: mount your API under /api here
-
-	// UI (embedded)
-	r.Mount("/", ui.Handler())
-
-	addr := cfg.Server.HTTPListen
-	if addr == "" { addr = ":8080" }
-
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+	// --- Config via envs (simple & explicit) ---
+	listen := getenv("LISTEN_ADDR", ":8080")
+	dataDir := getenv("DATA_DIR", "/var/lib/logship")
+	dbPath := filepath.Join(dataDir, "logship.db")
+	syslogUDP := os.Getenv("SYSLOG_UDP_LISTEN") // e.g. ":5514"
+	syslogTCP := os.Getenv("SYSLOG_TCP_LISTEN") // e.g. ":5514"
+	logLimitEnv := getenv("RECENT_LOG_LIMIT", "100")
+	logLimit, _ := strconv.Atoi(logLimitEnv)
+	if logLimit <= 0 || logLimit > 1000 {
+		logLimit = 100
 	}
 
-	// Graceful shutdown
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// --- Ensure data dir & open DB ---
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		log.Fatalf("mkdir %s: %v", dataDir, err)
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		log.Fatalf("open store: %v", err)
+	}
+	log.Printf("store: using %s", dbPath)
 
+	// --- Router: API + UI ---
+	r := chi.NewRouter()
+	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
+	api.Register(r, db, api.Opts{RecentDefaultLimit: logLimit})
+	r.Mount("/", ui.Handler())
+
+	srv := &http.Server{Addr: listen, Handler: r}
+
+	// --- Syslog listeners (optional) ---
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	if syslogUDP != "" || syslogTCP != "" {
+		go ingest.RunSyslog(ctx, db, syslogUDP, syslogTCP)
+	}
+
+	// --- Start HTTP ---
 	go func() {
-		log.Printf("http: listening on %s", addr)
+		log.Printf("http: listening on %s", listen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http: %v", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("shutdown: signal received")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("http: shutdown error: %v", err)
-	}
-	fmt.Println("bye")
+	log.Println("shutting down...")
+
+	// Graceful HTTP shutdown
+	shCtx, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	_ = srv.Shutdown(shCtx)
+	_ = db.Close()
 }

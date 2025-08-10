@@ -6,34 +6,34 @@
 FROM golang:1.22 AS build
 WORKDIR /src
 
-# Copy just go.mod to warm the module cache (no go.sum needed)
+# Preload deps for better Docker layer caching
 COPY go.mod ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
-# Now copy the full source and tidy to produce go.sum inside the image
+# App source
 COPY . .
+
+# Build static binary
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
+    CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags "-s -w" -o /out/logship ./cmd/logship
 
-# create a data dir layer we can chown in the final image
-RUN mkdir -p /out/var/lib/logship
-
 ########################
-# Runtime (distroless, non-root)
+# Runtime (distroless)
 ########################
-FROM gcr.io/distroless/base-debian12:latest
+FROM gcr.io/distroless/base-debian12
+WORKDIR /app
 
-# Run as the predefined non-root user in distroless
-USER nonroot:nonroot
+COPY --from=build /out/logship /app/logship
 
-# Binary and data dir (owned by nonroot)
-COPY --from=build /out/logship /logship
-COPY --from=build --chown=nonroot:nonroot /out/var/lib/logship /var/lib/logship
-
+# Defaults (can be overridden by envs / compose)
+ENV LISTEN_ADDR=:8080
 ENV DATA_DIR=/var/lib/logship
+
+VOLUME ["/var/lib/logship"]
 EXPOSE 8080 5514/tcp 5514/udp
 
-ENTRYPOINT ["/logship"]
+# Run as root so we can create DATA_DIR by default (you can drop to nonroot via compose)
+ENTRYPOINT ["/app/logship"]
