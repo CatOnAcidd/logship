@@ -1,58 +1,35 @@
 # syntax=docker/dockerfile:1.7
 
-############################
-# Build stage
-############################
-FROM --platform=$BUILDPLATFORM golang:1.22 AS build
+########################
+# Build
+########################
+FROM golang:1.22 AS build
 WORKDIR /src
 
-# Build args for cross-compile and edition tagging
-ARG TARGETOS
-ARG TARGETARCH
-ARG EDITION=base
+COPY go.mod go.sum ./
+RUN go mod download
 
-# Copy module files first (better caching)
-COPY go.mod ./
-# go.sum might not exist on first build — that's OK
-# COPY go.sum ./
-
-# Copy the rest of the source
 COPY . .
+# build once per arch; your GH Actions will handle matrix/multi-arch
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags "-s -w" -o /out/logship ./cmd/logship
 
-# Resolve deps and build a static binary for the target OS/ARCH
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go mod tidy && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags "-s -w" \
-      -o /out/logship ./cmd/logship
+# create a data dir layer we can chown in the final image
+RUN mkdir -p /out/var/lib/logship
 
-############################
-# Runtime stage
-############################
-FROM gcr.io/distroless/base-debian12
-WORKDIR /app
+########################
+# Runtime (distroless, non-root)
+########################
+FROM gcr.io/distroless/base-debian12:latest
 
-# Optional: record edition in the image env (your code can read this later)
-ARG EDITION=base
-ENV LOGSHIP_EDITION=${EDITION}
+# Run as the predefined non-root user in distroless
+USER nonroot:nonroot
 
-# App binary
-COPY --from=build /out/logship /app/logship
+# Binary and data dir (owned by nonroot)
+COPY --from=build /out/logship /logship
+COPY --from=build --chown=nonroot:nonroot /out/var/lib/logship /var/lib/logship
 
-# Default config (if you keep one in the repo)
-# Safe even if the file doesn't exist in your repo — comment this line out if you prefer mounting it only.
-COPY config.yaml /app/config.yaml
+ENV DATA_DIR=/var/lib/logship
+EXPOSE 8080 5514/tcp 5514/udp
 
-# Modern UI static assets (served by the app)
-# If your server expects a different path, tweak this.
-COPY internal/ui/static /app/static
-
-# Data and host log mounts
-VOLUME ["/data", "/var/log/host"]
-
-# Ports: HTTP + Syslog TCP/UDP
-EXPOSE 8080 514/tcp 514/udp
-
-# Run
-ENTRYPOINT ["/app/logship","-config","/app/config.yaml"]
+ENTRYPOINT ["/logship"]
