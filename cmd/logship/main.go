@@ -1,84 +1,64 @@
 package main
 
 import (
-	"context"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/catonacidd/logship/internal/api"
+	"github.com/catonacidd/logship/internal/config"
 	"github.com/catonacidd/logship/internal/ingest"
 	"github.com/catonacidd/logship/internal/store"
-	"github.com/catonacidd/logship/internal/ui"
 )
 
-func getenv(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 func main() {
-	// --- Config via envs (simple & explicit) ---
-	listen := getenv("LISTEN_ADDR", ":8080")
-	dataDir := getenv("DATA_DIR", "/var/lib/logship")
-	dbPath := filepath.Join(dataDir, "logship.db")
-	syslogUDP := os.Getenv("SYSLOG_UDP_LISTEN") // e.g. ":5514"
-	syslogTCP := os.Getenv("SYSLOG_TCP_LISTEN") // e.g. ":5514"
-	logLimitEnv := getenv("RECENT_LOG_LIMIT", "100")
-	logLimit, _ := strconv.Atoi(logLimitEnv)
-	if logLimit <= 0 || logLimit > 1000 {
-		logLimit = 100
-	}
+	cfg := config.Load(config.PathFromArgsOrDefault(os.Args[1:]))
 
-	// --- Ensure data dir & open DB ---
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		log.Fatalf("mkdir %s: %v", dataDir, err)
-	}
-	db, err := store.Open(dbPath)
+	db, err := store.Open(cfg.Storage.DataDir)
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
-	log.Printf("store: using %s", dbPath)
+	defer db.Close()
 
-	// --- Router: API + UI ---
-	r := chi.NewRouter()
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
-	api.Register(r, db, api.Opts{RecentDefaultLimit: logLimit})
-	r.Mount("/", ui.Handler())
-
-	srv := &http.Server{Addr: listen, Handler: r}
-
-	// --- Syslog listeners (optional) ---
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	if syslogUDP != "" || syslogTCP != "" {
-		go ingest.RunSyslog(ctx, db, syslogUDP, syslogTCP)
+	if err := db.Migrate(nil); err != nil {
+		log.Fatalf("migrate: %v", err)
 	}
 
-	// --- Start HTTP ---
+	re, err := ingest.NewRulesEngine(db)
+	if err != nil {
+		log.Fatalf("rules: %v", err)
+	}
+
+	sys := ingest.SyslogServer{
+		DB:        db,
+		Engine:    re,
+		IPFilter:  ingest.NewIPFilter(cfg.Lists),
+		UDPListen: cfg.Server.SyslogUDP,
+		TCPListen: cfg.Server.SyslogTCP,
+	}
+	sys.Start()
+
+	router := api.NewRouter(db, re, cfg)
+	srv := &http.Server{
+		Addr:         cfg.Server.ListenAddr,
+		Handler:      router,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
 	go func() {
-		log.Printf("http: listening on %s", listen)
+		log.Printf("http: listening on %s", cfg.Server.ListenAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http: %v", err)
 		}
 	}()
 
-	<-ctx.Done()
-	log.Println("shutting down...")
-
-	// Graceful HTTP shutdown
-	shCtx, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
-	_ = srv.Shutdown(shCtx)
-	_ = db.Close()
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+	_ = srv.Close()
+	sys.Shutdown()
 }

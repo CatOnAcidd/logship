@@ -1,45 +1,100 @@
 package config
 
 import (
+	"flag"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 )
 
+type Config struct {
+	Server  ServerConfig
+	Storage StorageConfig
+	Lists   ListConfig
+}
+
 type ServerConfig struct {
-	HTTPListen      string `yaml:"http_listen" json:"http_listen"`
-	SyslogTCPListen string `yaml:"syslog_tcp_listen" json:"syslog_tcp_listen"`
-	SyslogUDPListen string `yaml:"syslog_udp_listen" json:"syslog_udp_listen"`
+	ListenAddr string // :8080
+	SyslogUDP  string // :5514
+	SyslogTCP  string // :5514
 }
 
 type StorageConfig struct {
-	// May be a directory or a full file path. If directory, we'll use "logship.db" inside it.
-	Path string `yaml:"path" json:"path"`
+	DataDir  string
+	MaxMB    int
+	DroppedN int
+	RecentN  int
 }
 
-type Config struct {
-	Server  ServerConfig  `yaml:"server" json:"server"`
-	Storage StorageConfig `yaml:"storage" json:"storage"`
+type ListConfig struct {
+	Whitelist    []string
+	Blacklist    []string
+	DefaultAllow bool
 }
 
-func Default() *Config {
-	data := os.Getenv("DATA_DIR")
-	if data == "" {
-		data = "/var/lib/logship" // image will own this for nonroot
+func env(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
 	}
+	return def
+}
+func envInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
+	}
+	return def
+}
+
+func Load(_ string) *Config {
 	return &Config{
 		Server: ServerConfig{
-			HTTPListen:      ":8080",
-			SyslogTCPListen: "",
-			SyslogUDPListen: "",
+			ListenAddr: env("LISTEN_ADDR", ":8080"),
+			SyslogUDP:  env("SYSLOG_UDP_LISTEN", ":5514"),
+			SyslogTCP:  env("SYSLOG_TCP_LISTEN", ":5514"),
 		},
-		Storage: StorageConfig{Path: data},
+		Storage: StorageConfig{
+			DataDir:  env("DATA_DIR", "/var/lib/logship"),
+			MaxMB:    envInt("MAX_DB_MB", 512),
+			DroppedN: envInt("DROPPED_RECENT_N", 100),
+			RecentN:  envInt("RECENT_N", 100),
+		},
+		Lists: ListConfig{
+			Whitelist:    split(env("SRC_WHITELIST", "")),
+			Blacklist:    split(env("SRC_BLACKLIST", "")),
+			DefaultAllow: strings.ToLower(env("SRC_DEFAULT_ALLOW", "true")) != "false",
+		},
 	}
 }
 
-// If path=="" use defaults; if file missing, still return defaults (no error).
-func Load(path string) (*Config, error) {
-	// If you already had YAML loading here, keep it; otherwise:
-	return Default(), nil
+func split(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
-// Helper for main to pick a config path from args (if you already had one, keep it)
-func PathFromArgsOrDefault(args []string) string { return "" }
+func PathFromArgsOrDefault(args []string) string {
+	fs := flag.NewFlagSet("logship", flag.ContinueOnError)
+	var p string
+	fs.StringVar(&p, "config", "", "config file (optional)")
+	_ = fs.Parse(args)
+	if p == "" {
+		return ""
+	}
+	if !filepath.IsAbs(p) {
+		wd, _ := os.Getwd()
+		p = filepath.Join(wd, p)
+	}
+	return p
+}

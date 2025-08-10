@@ -2,30 +2,78 @@ package ingest
 
 import (
 	"context"
-	"encoding/json"
-	"log"
-	"time"
+	"net"
+	"regexp"
+	"sync"
 
-	"github.com/catonacidd/logship/internal/rules"
 	"github.com/catonacidd/logship/internal/store"
 )
 
-// evaluateAndStore applies rules (drop/allow) and inserts event; stores drop preview when needed.
-func evaluateAndStore(ctx context.Context, db *store.DB, eng *rules.Engine, ev *store.Event) error {
-	// Build probe (simple for now: message := string(raw))
-	probe := rules.EventProbe{
-		TS: ev.TS, Source: ev.Source, Host: ev.Host, Level: ev.Level,
-		Message: string(ev.Raw),
+type RulesEngine struct {
+	mu    sync.RWMutex
+	rules []compiledRule
+}
+type compiledRule struct {
+	name, action string
+	re           *regexp.Regexp
+}
+
+func NewRulesEngine(db *store.DB) (*RulesEngine, error) {
+	rl, err := db.ListRules(context.Background())
+	if err != nil { return nil, err }
+	re := &RulesEngine{}
+	for _, r := range rl {
+		cr := compiledRule{name: r.Name, action: r.Action}
+		cr.re, _ = regexp.Compile(r.Pattern)
+		re.rules = append(re.rules, cr)
 	}
-	dec := eng.Evaluate(probe)
-	if dec.Action == rules.ActionDrop {
-		ev.Dropped = true
-		// Add to drops buffer
-		js := map[string]any{"host":ev.Host,"level":ev.Level,"message":probe.Message}
-		b, _ := json.Marshal(js)
-		if err := db.InsertDrop(ctx, time.Now().UnixMilli(), ev.Source, dec.RuleName, string(b)); err!=nil {
-			log.Printf("insert drop preview: %v", err)
+	return re, nil
+}
+
+func (e *RulesEngine) Add(name, action, pattern string) error {
+	e.mu.Lock(); defer e.mu.Unlock()
+	rx, err := regexp.Compile(pattern)
+	if err != nil { return err }
+	e.rules = append(e.rules, compiledRule{name: name, action: action, re: rx})
+	return nil
+}
+
+func (e *RulesEngine) Evaluate(ev *store.Event) (drop bool, rule string) {
+	e.mu.RLock(); defer e.mu.RUnlock()
+	for _, r := range e.rules {
+		if r.re != nil && r.re.MatchString(ev.Message) {
+			return r.action == "drop", r.name
 		}
 	}
-	return db.Insert(ctx, ev)
+	return false, ""
+}
+
+// IP allow/deny
+
+type IPFilter struct {
+	wh, bl      []*net.IPNet
+	defaultAllow bool
+}
+
+func NewIPFilter(lists struct{
+	Whitelist []string
+	Blacklist []string
+	DefaultAllow bool
+}) *IPFilter {
+	f := &IPFilter{defaultAllow: lists.DefaultAllow}
+	for _, c := range lists.Whitelist {
+		if _, n, err := net.ParseCIDR(c); err == nil { f.wh = append(f.wh, n) }
+	}
+	for _, c := range lists.Blacklist {
+		if _, n, err := net.ParseCIDR(c); err == nil { f.bl = append(f.bl, n) }
+	}
+	return f
+}
+
+func (f *IPFilter) Allowed(ip string) bool {
+	p := net.ParseIP(ip)
+	if p == nil { return f.defaultAllow }
+	for _, n := range f.bl { if n.Contains(p) { return false } }
+	for _, n := range f.wh { if n.Contains(p) { return true } }
+	return f.defaultAllow
 }
