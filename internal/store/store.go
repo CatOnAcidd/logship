@@ -4,133 +4,164 @@ import (
 	"context"
 	"database/sql"
 	_ "modernc.org/sqlite"
-	"path/filepath"
 	"time"
 )
 
-type DB struct {
-	conn *sql.DB
-}
-
-func Open(dataDir string) (*DB, error) {
-	p := filepath.Join(dataDir, "logship.db")
-	c, err := sql.Open("sqlite", p+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
-	if err != nil { return nil, err }
-	if _, err := c.Exec(schemaDDL); err != nil { return nil, err }
-	return &DB{conn: c}, nil
-}
-
-func (d *DB) Close() error { return d.conn.Close() }
+type DB struct{ sql *sql.DB }
 
 type Event struct {
-	ID int64 `json:"id"`
-	Host string `json:"host"`
-	Level string `json:"level"`
-	Message string `json:"message"`
-	SourceIP string `json:"source_ip"`
-	ReceivedAt time.Time `json:"received_at"`
+	ID       int64     `json:"id"`
+	TS       time.Time `json:"ts"`
+	Host     string    `json:"host"`
+	Level    string    `json:"level"`
+	Message  string    `json:"message"`
+	SourceIP string    `json:"source_ip"`
+	Dropped  bool      `json:"dropped"`
+}
+
+type Stats struct {
+	Total    int64 `json:"total"`
+	LastHour int64 `json:"last_hour"`
+	Dropped  int64 `json:"dropped"`
 }
 
 type QueryParams struct {
-	Search string
-	Limit int
-	Offset int
-	OnlyDrops bool
+	Q       string
+	Dropped *bool
+	Limit   int
 }
 
-func Now() time.Time { return time.Now().UTC() }
-
-const schemaDDL = `
-CREATE TABLE IF NOT EXISTS events(
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	host TEXT,
-	level TEXT,
-	message TEXT,
-	source_ip TEXT,
-	received_at TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_events_received_at ON events(received_at);
-CREATE TABLE IF NOT EXISTS drops(
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	host TEXT, level TEXT, message TEXT, source_ip TEXT, received_at TIMESTAMP
-);
-`
-
-func (d *DB) Insert(ctx context.Context, ev Event) error {
-	_, err := d.conn.ExecContext(ctx, `INSERT INTO events(host,level,message,source_ip,received_at)VALUES(?,?,?,?,?)`,
-		ev.Host, ev.Level, ev.Message, ev.SourceIP, ev.ReceivedAt)
-	return err
-}
-
-func (d *DB) InsertDrop(ctx context.Context, ev Event) error {
-	_, err := d.conn.ExecContext(ctx, `INSERT INTO drops(host,level,message,source_ip,received_at)VALUES(?,?,?,?,?)`,
-		ev.Host, ev.Level, ev.Message, ev.SourceIP, ev.ReceivedAt)
-	return err
-}
-
-func (d *DB) Query(ctx context.Context, q QueryParams) ([]Event, int, error) {
-	table := "events"
-	if q.OnlyDrops { table = "drops" }
-	countSQL := "SELECT COUNT(*) FROM " + table
-	dataSQL := "SELECT id,host,level,message,source_ip,received_at FROM " + table + " ORDER BY id DESC LIMIT ? OFFSET ?"
-	args := []any{q.Limit, q.Offset}
-	if q.Search != "" {
-		like := "%" + q.Search + "%"
-		countSQL = "SELECT COUNT(*) FROM " + table + " WHERE host LIKE ? OR level LIKE ? OR message LIKE ? OR source_ip LIKE ?"
-		dataSQL = "SELECT id,host,level,message,source_ip,received_at FROM " + table + " WHERE host LIKE ? OR level LIKE ? OR message LIKE ? OR source_ip LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?"
-		args = []any{like, like, like, like, q.Limit, q.Offset}
+func Open(path string) (*DB, error) {
+	db, err := sql.Open("sqlite", "file:"+path+"?cache=shared&_pragma=journal_mode(WAL)&_busy_timeout=5000")
+	if err != nil {
+		return nil, err
 	}
-	var total int
-	if err := d.conn.QueryRowContext(ctx, countSQL, args[:len(args)-2]...).Scan(&total); err != nil { return nil, 0, err }
-	rows, err := d.conn.QueryContext(ctx, dataSQL, args...)
-	if err != nil { return nil, 0, err }
+	return &DB{sql: db}, nil
+}
+
+func (d *DB) Close() error { return d.sql.Close() }
+
+func (d *DB) Init(ctx context.Context) error {
+	_, err := d.sql.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TIMESTAMP NOT NULL,
+  host TEXT,
+  level TEXT,
+  message TEXT,
+  source_ip TEXT,
+  dropped INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_events_dropped_ts ON events(dropped, ts);
+`)
+	return err
+}
+
+func (d *DB) InsertEvent(ctx context.Context, e *Event) error {
+	if e.TS.IsZero() {
+		e.TS = time.Now().UTC()
+	}
+	res, err := d.sql.ExecContext(ctx, `
+INSERT INTO events(ts,host,level,message,source_ip,dropped)
+VALUES(?,?,?,?,?,?)
+`, e.TS, e.Host, e.Level, e.Message, e.SourceIP, boolToInt(e.Dropped))
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	e.ID = id
+	return nil
+}
+
+func (d *DB) InsertDrop(ctx context.Context, e *Event) error {
+	e.Dropped = true
+	return d.InsertEvent(ctx, e)
+}
+
+func (d *DB) QueryEvents(ctx context.Context, qp QueryParams) ([]Event, error) {
+	args := []any{}
+	where := "1=1"
+	if qp.Q != "" {
+		where += " AND (message LIKE ? OR host LIKE ? OR level LIKE ?)"
+		arg := "%" + qp.Q + "%"
+		args = append(args, arg, arg, arg)
+	}
+	if qp.Dropped != nil {
+		where += " AND dropped = ?"
+		args = append(args, boolToInt(*qp.Dropped))
+	}
+	limit := 100
+	if qp.Limit > 0 && qp.Limit <= 1000 {
+		limit = qp.Limit
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+SELECT id, ts, host, level, message, source_ip, dropped
+FROM events
+WHERE `+where+`
+ORDER BY id DESC
+LIMIT ?`, append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []Event
 	for rows.Next() {
-		var ev Event
-		if err := rows.Scan(&ev.ID, &ev.Host, &ev.Level, &ev.Message, &ev.SourceIP, &ev.ReceivedAt); err != nil { return nil, 0, err }
-		out = append(out, ev)
+		var e Event
+		var dropped int
+		if err := rows.Scan(&e.ID, &e.TS, &e.Host, &e.Level, &e.Message, &e.SourceIP, &dropped); err != nil {
+			return nil, err
+		}
+		e.Dropped = dropped == 1
+		out = append(out, e)
 	}
-	return out, total, nil
+	return out, rows.Err()
 }
 
-type StatsResp struct {
-	Total int `json:"total"`
-	Drops int `json:"drops"`
-}
-
-func (d *DB) Stats(ctx context.Context) (StatsResp, error) {
-	var s StatsResp
-	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&s.Total); err != nil { return s, err }
-	if err := d.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM drops`).Scan(&s.Drops); err != nil { return s, err }
+func (d *DB) Stats(ctx context.Context) (Stats, error) {
+	var s Stats
+	if err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&s.Total); err != nil {
+		return s, err
+	}
+	if err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE dropped=1`).Scan(&s.Dropped); err != nil {
+		return s, err
+	}
+	if err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE ts >= datetime('now','-1 hour')`).Scan(&s.LastHour); err != nil {
+		return s, err
+	}
 	return s, nil
 }
 
-// AutoTrimLoop keeps only the most recent N rows across tables to bound disk usage.
-func AutoTrimLoop(ctx context.Context, d *DB, maxRows int) {
-	if maxRows <= 0 { maxRows = 500000 }
-	t := time.NewTicker(30 * time.Second)
+func (d *DB) TrimToMaxRows(ctx context.Context, maxRows int) error {
+	if maxRows <= 0 {
+		return nil
+	}
+	// delete anything older than the newest maxRows
+	_, err := d.sql.ExecContext(ctx, `
+DELETE FROM events
+WHERE id <= (
+  SELECT COALESCE((SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET ?), -1)
+)
+`, maxRows-1)
+	return err
+}
+
+func (d *DB) StartAutoTrim(ctx context.Context, maxRows int, every time.Duration) {
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, table := range []string{"events", "drops"} {
-				// delete rows older than the N newest
-				_, _ = d.conn.ExecContext(ctx, `DELETE FROM `+table+` WHERE id < IFNULL((SELECT id FROM `+table+` ORDER BY id DESC LIMIT 1 OFFSET ?), 0)`, maxRows)
-			}
+			_ = d.TrimToMaxRows(ctx, maxRows)
 		}
 	}
 }
 
-// helpers for whitelist/blacklist
-func WhitelistedOrEmpty(list []string, ip string) bool {
-	if len(list) == 0 { return true }
-	for _, s := range list { if s == ip { return true } }
-	return false
-}
-func Blacklisted(list []string, ip string) bool {
-	for _, s := range list { if s == ip { return true } }
-	return false
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

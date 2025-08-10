@@ -1,100 +1,62 @@
 package config
 
 import (
-	"flag"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 type Config struct {
-	Server  ServerConfig
-	Storage StorageConfig
-	Lists   ListConfig
+	DataDir    string
+	HTTPAddr   string
+	SyslogUDP  string
+	SyslogTCP  string
+	MaxRows    int
+	Whitelist  map[string]struct{}
+	Blacklist  map[string]struct{}
+	Theme      string // "light" or "dark"
 }
 
-type ServerConfig struct {
-	ListenAddr string // :8080
-	SyslogUDP  string // :5514
-	SyslogTCP  string // :5514
+func FromEnv() *Config {
+	cfg := &Config{
+		DataDir:   env("DATA_DIR", "/var/lib/logship"),
+		HTTPAddr:  env("HTTP_ADDR", ":8080"),
+		SyslogUDP: env("SYSLOG_UDP_LISTEN", ":5514"), // enable by default
+		SyslogTCP: env("SYSLOG_TCP_LISTEN", ""),      // disabled by default
+		MaxRows:   envInt("MAX_ROWS", 200000),
+		Theme:     env("THEME", "dark"),
+	}
+	cfg.Whitelist = toSet(env("IP_WHITELIST", ""))
+	cfg.Blacklist = toSet(env("IP_BLACKLIST", ""))
+	return cfg
 }
 
-type StorageConfig struct {
-	DataDir  string
-	MaxMB    int
-	DroppedN int
-	RecentN  int
-}
-
-type ListConfig struct {
-	Whitelist    []string
-	Blacklist    []string
-	DefaultAllow bool
-}
-
-func env(key, def string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
 		return v
 	}
 	return def
 }
-func envInt(key string, def int) int {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
+
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
 		}
 	}
 	return def
 }
 
-func Load(_ string) *Config {
-	return &Config{
-		Server: ServerConfig{
-			ListenAddr: env("LISTEN_ADDR", ":8080"),
-			SyslogUDP:  env("SYSLOG_UDP_LISTEN", ":5514"),
-			SyslogTCP:  env("SYSLOG_TCP_LISTEN", ":5514"),
-		},
-		Storage: StorageConfig{
-			DataDir:  env("DATA_DIR", "/var/lib/logship"),
-			MaxMB:    envInt("MAX_DB_MB", 512),
-			DroppedN: envInt("DROPPED_RECENT_N", 100),
-			RecentN:  envInt("RECENT_N", 100),
-		},
-		Lists: ListConfig{
-			Whitelist:    split(env("SRC_WHITELIST", "")),
-			Blacklist:    split(env("SRC_BLACKLIST", "")),
-			DefaultAllow: strings.ToLower(env("SRC_DEFAULT_ALLOW", "true")) != "false",
-		},
+func toSet(csv string) map[string]struct{} {
+	s := map[string]struct{}{}
+	if csv == "" {
+		return s
 	}
-}
-
-func split(s string) []string {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
+	for _, p := range strings.Split(csv, ",") {
 		p = strings.TrimSpace(p)
 		if p != "" {
-			out = append(out, p)
+			s[p] = struct{}{}
 		}
 	}
-	return out
-}
-
-func PathFromArgsOrDefault(args []string) string {
-	fs := flag.NewFlagSet("logship", flag.ContinueOnError)
-	var p string
-	fs.StringVar(&p, "config", "", "config file (optional)")
-	_ = fs.Parse(args)
-	if p == "" {
-		return ""
-	}
-	if !filepath.IsAbs(p) {
-		wd, _ := os.Getwd()
-		p = filepath.Join(wd, p)
-	}
-	return p
+	return s
 }

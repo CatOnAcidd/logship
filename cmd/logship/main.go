@@ -2,48 +2,84 @@ package main
 
 import (
 	"context"
-	"embed"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"time"
 
-	"github.com/CatOnAcidd/logship/internal/api"
-	"github.com/CatOnAcidd/logship/internal/ingest"
-	"github.com/CatOnAcidd/logship/internal/store"
+	"github.com/catonacidd/logship/internal/api"
+	"github.com/catonacidd/logship/internal/config"
+	"github.com/catonacidd/logship/internal/ingest"
+	"github.com/catonacidd/logship/internal/store"
 )
 
-//go:embed web/*
-var webFS embed.FS
-
 func main() {
-	cfg := api.LoadConfigFromEnv()
+	cfg := config.FromEnv()
 
+	// Ensure data dir exists
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
-		log.Fatalf("mkdir data dir: %v", err)
+		log.Fatalf("data dir: %v", err)
 	}
 
-	db, err := store.Open(cfg.DataDir)
+	dbPath := filepath.Join(cfg.DataDir, "logship.db")
+	db, err := store.Open(dbPath)
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
 	defer db.Close()
+	log.Printf("store: using %s", dbPath)
 
-	go store.AutoTrimLoop(context.Background(), db, cfg.MaxRows)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	r := api.NewRouter(db, cfg, webFS)
+	if err := db.Init(ctx); err != nil {
+		log.Fatalf("init store: %v", err)
+	}
 
-	// start syslog listeners if configured
+	// Start auto-trim to enforce max rows
+	go db.StartAutoTrim(ctx, cfg.MaxRows, time.Minute)
+
+	// Start syslog UDP/TCP if enabled
 	if cfg.SyslogUDP != "" {
-		go ingest.RunSyslogUDP(context.Background(), db, cfg.SyslogUDP)
+		go func() {
+			if err := ingest.RunSyslogUDP(ctx, cfg.SyslogUDP, db, cfg); err != nil {
+				log.Printf("syslog udp: %v", err)
+			}
+		}()
 	}
 	if cfg.SyslogTCP != "" {
-		go ingest.RunSyslogTCP(context.Background(), db, cfg.SyslogTCP)
+		go func() {
+			if err := ingest.RunSyslogTCP(ctx, cfg.SyslogTCP, db, cfg); err != nil {
+				log.Printf("syslog tcp: %v", err)
+			}
+		}()
 	}
 
-	srv := &http.Server{Addr: cfg.HTTPListen, Handler: r, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second}
-	log.Printf("logship listening on %s (web), syslog udp=%q tcp=%q, data=%s", cfg.HTTPListen, cfg.SyslogUDP, cfg.SyslogTCP, cfg.DataDir)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("http server: %v", err)
+	// HTTP API + UI
+	mux := api.Router(db, cfg)
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	go func() {
+		log.Printf("http: listening on %s", cfg.HTTPAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("http: %v", err)
+		}
+	}()
+
+	// Graceful shutdown
+	sigC := make(chan os.Signal, 1)
+	signal.Notify(sigC, os.Interrupt, syscall.SIGTERM)
+	<-sigC
+	log.Println("shutting down...")
+	cancel()
+	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shCancel()
+	_ = srv.Shutdown(shCtx)
 }
