@@ -1,7 +1,6 @@
 package ingest
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -36,7 +35,6 @@ func HandleHTTPIngest(db *store.DB, cfg *config.Config) http.HandlerFunc {
 			SourceIP: req.SourceIP,
 		}
 		if e.SourceIP == "" {
-			// best-effort from request
 			e.SourceIP = r.Header.Get("X-Forwarded-For")
 			if e.SourceIP == "" {
 				e.SourceIP = strings.Split(r.RemoteAddr, ":")[0]
@@ -84,7 +82,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func strconvAtoi(s string) (int, error) { // tiny helper to avoid importing strconv widely
+func strconvAtoi(s string) (int, error) {
 	var n int
 	for i := 0; i < len(s); i++ {
 		c := s[i]
