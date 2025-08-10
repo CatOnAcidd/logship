@@ -6,12 +6,16 @@
 FROM golang:1.22 AS build
 WORKDIR /src
 
-COPY go.mod go.sum ./
-RUN go mod download
+# Copy just go.mod to warm the module cache (no go.sum needed)
+COPY go.mod ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
+# Now copy the full source and tidy to produce go.sum inside the image
 COPY . .
-# build once per arch; your GH Actions will handle matrix/multi-arch
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags "-s -w" -o /out/logship ./cmd/logship
 
 # create a data dir layer we can chown in the final image
