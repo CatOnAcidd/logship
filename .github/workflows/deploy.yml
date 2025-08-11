@@ -1,0 +1,85 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.CR_PAT }}
+
+      - name: Extract metadata (tags, labels) for backend
+        id: meta_backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/backend
+
+      - name: Build & Push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.meta_backend.outputs.tags }}
+          labels: ${{ steps.meta_backend.outputs.labels }}
+
+      - name: Extract metadata (tags, labels) for frontend
+        id: meta_frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/frontend
+
+      - name: Build & Push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ steps.meta_frontend.outputs.tags }}
+          labels: ${{ steps.meta_frontend.outputs.labels }}
+
+  deploy:
+    if: ${{ secrets.DEPLOY_HOST && secrets.DEPLOY_USER && secrets.DEPLOY_SSH_KEY && secrets.DEPLOY_COMPOSE_PATH }}
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install SSH client
+        run: sudo apt-get update && sudo apt-get install -y openssh-client
+
+      - name: Add SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          printf "Host *\n  StrictHostKeyChecking no\n" > ~/.ssh/config
+
+      - name: Deploy via SSH
+        env:
+          GH_REPO: ${{ github.repository }}
+          BACKEND_IMAGE: ghcr.io/${{ github.repository }}/backend:latest
+          FRONTEND_IMAGE: ghcr.io/${{ github.repository }}/frontend:latest
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+          set -e
+          cd "${{ secrets.DEPLOY_COMPOSE_PATH }}"
+          if [ -f ".env" ] && [ -n "${{ secrets.DEPLOY_ENV }}" ]; then
+            echo "INFO: Remote .env already exists. You provided DEPLOY_ENV but it won't be used since .env is present."
+          elif [ -n "${{ secrets.DEPLOY_ENV }}" ]; then
+            echo "${{ secrets.DEPLOY_ENV }}" > .env
+          fi
+          docker login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.CR_PAT }}"
+          docker compose pull || true
+          docker compose up -d
+          docker system prune -f
+          EOF

@@ -1,0 +1,20 @@
+services:
+  logship:
+    image: ghcr.io/${GITHUB_USER:-catonacidd}/logship:latest
+    container_name: logship
+    ports:
+      - "8080:8080"
+      - "5514:5514/tcp"
+      - "5514:5514/udp"
+    environment:
+      DATA_DIR: /var/lib/logship
+      HTTP_ADDR: ":8080"
+      SYSLOG_UDP_LISTEN: ":5514"
+      SYSLOG_TCP_LISTEN: ""   # set to ":5514" to enable TCP too (but then change host port)
+      MAX_ROWS: "200000"
+      THEME: "dark"
+      # IP_WHITELIST: "10.0.0.10,10.0.0.11"
+      # IP_BLACKLIST: "192.168.1.50"
+    volumes:
+      - ./data:/var/lib/logship
+    restart: unless-stopped

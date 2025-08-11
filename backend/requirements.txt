@@ -1,0 +1,9 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.8.2
+SQLAlchemy==2.0.32
+alembic==1.13.2
+python-dotenv==1.0.1
+ipaddress==1.0.23
+orjson==3.10.7
+regex==2024.7.24
