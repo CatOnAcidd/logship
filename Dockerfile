@@ -1,36 +1,34 @@
 # syntax=docker/dockerfile:1.7
 
-# ===== Build stage =====
-FROM golang:1.22 AS build
+ARG GO_VERSION=1.22
+
+# -------- builder --------
+FROM golang:${GO_VERSION} AS builder
 WORKDIR /src
 
-# Cache modules by go.mod content only
+# Cache modules
 COPY go.mod ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
-# Now copy the rest and tidy to generate go.sum inside image
+# Copy source
 COPY . .
+
+# Build (pure static, no CGO)
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go mod tidy && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/logship ./cmd/logship
 
-# ===== Runtime =====
-FROM gcr.io/distroless/base-debian12@sha256:1951bedd9ab20dd71a5ab11b3f5a624863d7af4109f299d62289928b9e311d5d
+# -------- runtime --------
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+ENV DATA_DIR=/var/lib/logship \
+    HTTP_LISTEN=:8080 \
+    SYSLOG_UDP_LISTEN=:5514 \
+    SYSLOG_TCP_LISTEN=:5514
 
-# We run as root so volume mounts are writable everywhere; switch to nonroot later if desired.
-WORKDIR /app
-COPY --from=build /out/logship /logship
-
-EXPOSE 8080/tcp
-EXPOSE 5514/tcp
-EXPOSE 5514/udp
-
+EXPOSE 8080 5514/tcp 5514/udp
 VOLUME ["/var/lib/logship"]
 
-ENV DATA_DIR=/var/lib/logship \
-    HTTP_ADDR=:8080 \
-    SYSLOG_UDP_LISTEN=:5514 \
-    SYSLOG_TCP_LISTEN=
-
+COPY --from=builder /out/logship /logship
+USER nonroot:nonroot
 ENTRYPOINT ["/logship"]
