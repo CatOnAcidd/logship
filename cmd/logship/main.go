@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"net/http"
 	"os"
@@ -14,16 +13,18 @@ import (
 	"github.com/catonacidd/logship/internal/config"
 	"github.com/catonacidd/logship/internal/ingest"
 	"github.com/catonacidd/logship/internal/store"
+	"github.com/catonacidd/logship/internal/ui"
 )
 
 func main() {
 	cfg := config.FromEnv()
 
-	// Ensure data dir exists
+	// Ensure data dir
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatalf("data dir: %v", err)
 	}
 
+	// Open DB
 	dbPath := filepath.Join(cfg.DataDir, "logship.db")
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -32,54 +33,42 @@ func main() {
 	defer db.Close()
 	log.Printf("store: using %s", dbPath)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := db.Init(ctx); err != nil {
-		log.Fatalf("init store: %v", err)
+	// Rule engine lives in DB (base: simple substring rules)
+	// Start syslog listeners
+	syslog := ingest.NewSyslogIngest(db, cfg)
+	if err := syslog.Start(); err != nil {
+		log.Fatalf("syslog start: %v", err)
 	}
+	defer syslog.Close()
 
-	// Start auto-trim to enforce max rows
-	go db.StartAutoTrim(ctx, cfg.MaxRows, time.Minute)
-
-	// Start syslog UDP/TCP if enabled
-	if cfg.SyslogUDP != "" {
-		go func() {
-			if err := ingest.RunSyslogUDP(ctx, cfg.SyslogUDP, db, cfg); err != nil {
-				log.Printf("syslog udp: %v", err)
-			}
-		}()
-	}
-	if cfg.SyslogTCP != "" {
-		go func() {
-			if err := ingest.RunSyslogTCP(ctx, cfg.SyslogTCP, db, cfg); err != nil {
-				log.Printf("syslog tcp: %v", err)
-			}
-		}()
+	// File tail (optional; disabled by default)
+	if cfg.FileTailPath != "" {
+		go ingest.RunFileTail(db, cfg.FileTailPath, cfg.FileTailGlob)
 	}
 
 	// HTTP API + UI
-	mux := api.Router(db, cfg)
+	mux := http.NewServeMux()
+	api.Attach(mux, db, cfg)
+
+	uih, _ := ui.Handler()
+	mux.Handle("/", uih)
+
 	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           mux,
+		Addr:              cfg.HTTPListen,
+		Handler:           api.WithLogging(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
 	go func() {
-		log.Printf("http: listening on %s", cfg.HTTPAddr)
+		log.Printf("http: listening on %s", cfg.HTTPListen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http: %v", err)
 		}
 	}()
 
-	// Graceful shutdown
-	sigC := make(chan os.Signal, 1)
-	signal.Notify(sigC, os.Interrupt, syscall.SIGTERM)
-	<-sigC
-	log.Println("shutting down...")
-	cancel()
-	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shCancel()
-	_ = srv.Shutdown(shCtx)
+	// Wait for signal
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	<-ch
+	log.Printf("shutting down…")
+	_ = srv.Close()
 }

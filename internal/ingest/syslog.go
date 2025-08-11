@@ -1,99 +1,180 @@
 package ingest
 
 import (
-	"bufio"
+	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/catonacidd/logship/internal/config"
 	"github.com/catonacidd/logship/internal/store"
+	"github.com/influxdata/go-syslog/v3"
+	"github.com/influxdata/go-syslog/v3/rfc3164"
+	"github.com/influxdata/go-syslog/v3/rfc5424"
 )
 
-// Minimal tolerant parser: try "<PRI>ts host msg" or default host="", message=whole line
-func parseLine(line string) (host, level, msg string) {
-	msg = strings.TrimSpace(line)
-	level = "info"
-	// crude host extraction if "host: message"
-	if i := strings.Index(msg, ": "); i > 0 && i < 64 {
-		host = msg[:i]
-		msg = strings.TrimSpace(msg[i+2:])
-	}
-	return
+type SyslogIngest struct {
+	db   *store.DB
+	cfg  *config.Config
+	udp  *net.UDPConn
+	tcp  net.Listener
+	stop chan struct{}
 }
 
-func RunSyslogUDP(ctx context.Context, addr string, db *store.DB, cfg *config.Config) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+func NewSyslogIngest(db *store.DB, cfg *config.Config) *SyslogIngest {
+	return &SyslogIngest{db: db, cfg: cfg, stop: make(chan struct{})}
+}
+
+func (s *SyslogIngest) Start() error {
+	// UDP
+	udpAddr, err := net.ResolveUDPAddr("udp", s.cfg.SyslogUDP)
 	if err != nil {
 		return err
 	}
-	conn, err := net.ListenUDP("udp", udpAddr)
+	udpConn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
 		return err
 	}
-	log.Printf("syslog udp: %s", addr)
-	go func() {
-		<-ctx.Done()
-		_ = conn.Close()
-	}()
+	s.udp = udpConn
+	go s.serveUDP()
+
+	// TCP
+	ln, err := net.Listen("tcp", s.cfg.SyslogTCP)
+	if err != nil {
+		return err
+	}
+	s.tcp = ln
+	go s.serveTCP()
+
+	log.Printf("syslog: UDP %s, TCP %s", s.cfg.SyslogUDP, s.cfg.SyslogTCP)
+	return nil
+}
+
+func (s *SyslogIngest) Close() error {
+	close(s.stop)
+	if s.udp != nil {
+		_ = s.udp.Close()
+	}
+	if s.tcp != nil {
+		_ = s.tcp.Close()
+	}
+	return nil
+}
+
+func parseSyslogLine(line []byte) (host, level, msg string) {
+	// try 5424, then 3164
+	var m syslog.Message
+	var err error
+
+	if p := rfc5424.NewParser(); p != nil {
+		m, err = p.Parse(bytes.NewReader(line))
+		if err == nil && m != nil {
+			if h := m.Hostname(); h != nil {
+				host = *h
+			}
+			if l := m.SeverityLevel(); l != nil {
+				level = l.String()
+			}
+			if mm := m.Message(); mm != nil {
+				msg = string(*mm)
+			}
+			if msg == "" {
+				msg = string(line)
+			}
+			return
+		}
+	}
+	if p := rfc3164.NewParser(); p != nil {
+		m, err = p.Parse(bytes.NewReader(line))
+		if err == nil && m != nil {
+			if h := m.Hostname(); h != nil {
+				host = *h
+			}
+			if l := m.Severity(); l != nil {
+				level = l.String()
+			}
+			if mm := m.Message(); mm != nil {
+				msg = *mm
+			}
+			if msg == "" {
+				msg = string(line)
+			}
+			return
+		}
+	}
+
+	// Fallback
+	return "", "", string(line)
+}
+
+func (s *SyslogIngest) serveUDP() {
 	buf := make([]byte, 64*1024)
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		n, raddr, err := conn.ReadFrom(buf)
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			if ctx.Err() != nil {
-				return nil
-			}
-			continue
-		}
+		n, addr, err := s.udp.ReadFromUDP(buf)
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			log.Printf("syslog udp read: %v", err)
-			continue
+			return
 		}
-		host, level, msg := parseLine(string(buf[:n]))
-		e := eventFrom(raddr, host, level, msg)
-		if err := evaluateAndStore(context.Background(), db, cfg, e); err != nil {
-			log.Printf("udp store: %v", err)
+		host, level, msg := parseSyslogLine(buf[:n])
+		if host == "" {
+			host = addr.IP.String()
 		}
+		e := &store.Event{
+			TS:      time.Now().UTC(),
+			Host:    host,
+			Level:   level,
+			Message: msg,
+		}
+		rules, _ := s.db.ListRules(context.Background())
+		_ = evaluateAndInsert(context.Background(), s.db, e, rules)
 	}
 }
 
-func RunSyslogTCP(ctx context.Context, addr string, db *store.DB, cfg *config.Config) error {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	log.Printf("syslog tcp: %s", addr)
-	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
-	}()
+func (s *SyslogIngest) serveTCP() {
 	for {
-		c, err := ln.Accept()
+		conn, err := s.tcp.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			log.Printf("syslog tcp accept: %v", err)
-			continue
+			return
 		}
-		go func(conn net.Conn) {
-			defer conn.Close()
-			sc := bufio.NewScanner(conn)
-			sc.Buffer(make([]byte, 4096), 1024*1024)
-			for sc.Scan() {
-				line := sc.Text()
-				host, level, msg := parseLine(line)
-				e := eventFrom(conn.RemoteAddr(), host, level, msg)
-				if err := evaluateAndStore(context.Background(), db, cfg, e); err != nil {
-					log.Printf("tcp store: %v", err)
+		go func(c net.Conn) {
+			defer c.Close()
+			buf := make([]byte, 64*1024)
+			for {
+				n, err := c.Read(buf)
+				if err != nil {
+					return
 				}
+				host, level, msg := parseSyslogLine(buf[:n])
+				if host == "" {
+					host = remoteHost(c.RemoteAddr())
+				}
+				e := &store.Event{
+					TS:      time.Now().UTC(),
+					Host:    host,
+					Level:   level,
+					Message: msg,
+				}
+				rules, _ := s.db.ListRules(context.Background())
+				_ = evaluateAndInsert(context.Background(), s.db, e, rules)
 			}
-		}(c)
+		}(conn)
 	}
+}
+
+func remoteHost(a net.Addr) string {
+	if a == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(a.String())
+	if err != nil {
+		return a.String()
+	}
+	return host
+}
+
+// Optional simple file tail
+func RunFileTail(db *store.DB, path string, isGlob bool) {
+	// Minimal: for now just log a message. (You can expand to real tailing later.)
+	fmt.Printf("filetail: configured path=%s glob=%v (not active in base sample)\n", path, isGlob)
 }
